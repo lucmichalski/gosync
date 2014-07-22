@@ -64,7 +64,8 @@ func lookupBucket(bucketName string, auth aws.Auth) (*s3.Bucket, error) {
 			log.Debugf("Bucket '%s' not found in '%s'.", bucketName, region)
 			continue
 		} else {
-			return nil, err
+			log.Debugf("Error attempting to find bucket: %s\n", err)
+			continue
 		}
 	}
 
