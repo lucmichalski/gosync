@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/brettweavnet/gosync/gosync"
-	"github.com/brettweavnet/gosync/version"
+	"github.com/yhat/gosync/gosync"
+	"github.com/yhat/gosync/version"
 
 	log "github.com/cihub/seelog"
 	"github.com/codegangsta/cli"
@@ -20,6 +20,8 @@ func main() {
 	app.Flags = []cli.Flag{
 		cli.IntFlag{"concurrent, c", 20, "number of concurrent transfers"},
 		cli.StringFlag{"log-level, l", "info", "log level"},
+		cli.StringFlag{"accesskey", "", "AWS access key"},
+		cli.StringFlag{"secretkey", "", "AWS secret key"},
 	}
 
 	const concurrent = 20
@@ -32,7 +34,9 @@ func main() {
 		exitOnError(err)
 
 		log.Debugf("Reading AWS credentials from AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY.")
-		auth, err := aws.EnvAuth()
+		// This will default to reading the env variables if
+		auth, err := aws.GetAuth(c.String("accesskey"),
+			c.String("secretkey"))
 		exitOnError(err)
 
 		source := c.Args()[0]
