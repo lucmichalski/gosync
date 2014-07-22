@@ -1,8 +1,8 @@
-[![Build Status](https://secure.travis-ci.org/brettweavnet/gosync.png)](http://travis-ci.org/brettweavnet/gosync)
-
 # gosync
 
-I want to be the fastest way to concurrently sync files and directories to/from S3.
+Concurrently sync files and directories to/from S3.
+
+Fork of [brettweavnet](https://github.com/brettweavnet/gosync)'s repo.
 
 # Installation
 
@@ -10,11 +10,11 @@ Ensure you have Go 1.2 or greater installed and your GOPATH is set.
 
 Clone the repo:
 
-    go get github.com/brettweavnet/gosync
+    go get github.com/yhat/gosync
 
 Change into the gosync directory and run make:
 
-    cd $GOPATH/src/github.com/brettweavnet/gosync/
+    cd $GOPATH/src/github.com/yhat/gosync/
     make
 
 # Setup
@@ -23,6 +23,8 @@ Set environment variables:
 
     AWS_SECRET_ACCESS_KEY=yyy
     AWS_ACCESS_KEY_ID=xxx
+
+Or specify them later as command line arguments.
 
 # Usage
 
