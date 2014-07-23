@@ -66,22 +66,6 @@ func SplitQuery(query string) (bucket, prefix, postfix string) {
 	return
 }
 
-// Given a bucket name and some auths, try to find the bucket's region
-// TODO: Make these requests concurrent
-func FindBucket(bucketName string, auth aws.Auth) (*s3.Bucket, error) {
-	for regionName, region := range aws.Regions {
-		fmt.Printf("Looking for bucket in region: %s\n", regionName)
-		// create a s3 client and try to find the bucket
-		bucket := s3.New(auth, region).Bucket(bucketName)
-		_, err := bucket.List("", "", "", 0)
-		if err == nil {
-			fmt.Println("Found bucket!")
-			return bucket, nil
-		}
-	}
-	return nil, errors.New("Could not locate s3 bucket")
-}
-
 type SyncJob struct {
 	Bucket       *s3.Bucket
 	Key          s3.Key
