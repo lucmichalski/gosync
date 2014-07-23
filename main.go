@@ -13,7 +13,7 @@ func main() {
 	app := cli.NewApp()
 	app.Name = "gosync"
 	app.Usage = "gosync OPTIONS SOURCE TARGET"
-	app.Version = "0.1.1"
+	app.Version = "0.1.2"
 	app.Flags = []cli.Flag{
 		cli.IntFlag{"concurrent, c", 20,
 			"number of concurrent transfers"},

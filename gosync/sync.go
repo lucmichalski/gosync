@@ -34,19 +34,29 @@ type Syncer struct {
 }
 
 func (s *Syncer) Run() {
-	bucketName, prefix, postfix := SplitQuery(s.S3Query)
-	fmt.Printf("Bucket name : %s\n", bucketName)
-	fmt.Printf("Prefix name : %s\n", prefix)
-	fmt.Printf("Postfix name: %s\n", postfix)
-	bucket := s3.New(s.Auth, s.Region).Bucket(bucketName)
-	fmt.Printf("Looking for keys in: %s\n", bucket.Name)
-	s.DownloadBucket(bucket, prefix, postfix)
+	re := regexp.MustCompile("^s3://")
+	s.S3Query = string(re.ReplaceAll([]byte(s.S3Query), []byte("")))
+	switch s.Mode {
+	case UPLOAD:
+		fmt.Println("Uploading file")
+		root, prefix, postfix := SplitLocalQuery(s.Localdir)
+		fmt.Printf("Rootdir     : %s\n", root)
+		fmt.Printf("Path prefix : %s\n", prefix)
+		fmt.Printf("Path postfix: %s\n", postfix)
+		// buckets := s3.New(s.Auth, s.Region).ListBuckets()
+	case DOWNLOAD:
+		bucketName, prefix, postfix := SplitS3Query(s.S3Query)
+		fmt.Printf("Bucket name : %s\n", bucketName)
+		fmt.Printf("Prefix name : %s\n", prefix)
+		fmt.Printf("Postfix name: %s\n", postfix)
+		bucket := s3.New(s.Auth, s.Region).Bucket(bucketName)
+		fmt.Printf("Looking for keys in: %s\n", bucket.Name)
+		s.DownloadBucket(bucket, prefix, postfix)
+	}
 }
 
 // Given a query split it into a bucketname and a prefix
-func SplitQuery(query string) (bucket, prefix, postfix string) {
-	re := regexp.MustCompile("^s3://")
-	// strip `s3://` form query
+func SplitS3Query(query string) (bucket, prefix, postfix string) {
 	nWildcards := strings.Count(query, "*")
 	if nWildcards == 0 {
 		postfix = ""
@@ -59,10 +69,20 @@ func SplitQuery(query string) (bucket, prefix, postfix string) {
 			"contain more than one wildcard ('*')\n")
 		os.Exit(2)
 	}
-	query = string(re.ReplaceAll([]byte(query), []byte("")))
 	path := strings.Split(query, "/")
 	bucket = path[0]
 	prefix = strings.Join(path[1:], "/")
+	return
+}
+
+// Given a query split it into a root directory and a prefix
+func SplitLocalQuery(query string) (root, prefix, postfix string) {
+	// windows...
+	sep := string(os.PathSeparator)
+	pathSteps := strings.Split(query, sep)
+	root = pathSteps[0] + sep
+	prefix = filepath.Join(pathSteps[1:]...)
+	postfix = ""
 	return
 }
 
@@ -248,7 +268,8 @@ func (sj *SyncJob) Download() bool {
 	}
 	defer fi.Close()
 	// Get response reader
-	responseReader, err := sj.Bucket.GetReader(sj.Key.Key)
+	keyName := strings.Replace(sj.Key.Key, " ", "+", -1)
+	responseReader, err := sj.Bucket.GetReader(keyName)
 	if err != nil {
 		fmt.Printf("Error making request for %s: %s\n",
 			sj.Key.Key, err)
