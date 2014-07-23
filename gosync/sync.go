@@ -9,7 +9,9 @@ import (
 	"io"
 	"os"
 	"path"
+	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -27,6 +29,7 @@ type Syncer struct {
 	Auth       aws.Auth
 	JobTypes   JobType
 	NTries     int
+	Full       bool
 }
 
 func (s *Syncer) Run() {
@@ -113,7 +116,7 @@ func (s *Syncer) DownloadBucket(bucket *s3.Bucket, prefix string) {
 				IsSuccessful: false,
 			}
 			// Execute a goroutine to run the job
-			go RunJob(sj, jobPool, doneJobs)
+			go sj.RunJob(jobPool, doneJobs)
 		}
 		// Once the returned list is not truncated we're done!
 		if !keyList.IsTruncated {
@@ -128,15 +131,56 @@ func (s *Syncer) DownloadBucket(bucket *s3.Bucket, prefix string) {
 		nJobs--
 		jobs[nJobs] = j
 		if nJobs == 0 {
-			return
+			break
 		}
 	}
+	if !s.Full {
+		return
+	}
+	// clean up target
+	filenames := make([]string, len(jobs))
+	i := 0
 	for _, job := range jobs {
-		fmt.Println(job.Filepath)
+		if !job.IsSuccessful {
+			continue
+		}
+		filenames[i] = job.Filepath
+		i++
+	}
+	pathPrefix := filepath.Join(strings.Split(prefix, "/")...)
+	pathPrefix = filepath.Join(s.Localdir, pathPrefix)
+	pathPrefix = fmt.Sprintf("^%s", regexp.QuoteMeta(pathPrefix))
+	fmt.Printf("Path prefix: %s\n", pathPrefix)
+	prefixRegexp := regexp.MustCompile(pathPrefix)
+
+	filenames = filenames[:i]
+	sort.Strings(filenames)
+
+	FileCheck := func(currpath string, info os.FileInfo, err error) error {
+		if info.IsDir() {
+			return nil
+		}
+		if !prefixRegexp.Match([]byte(currpath)) {
+			return nil
+		}
+		// See if this path was succcessfully downloaded
+		pathIndex := sort.SearchStrings(filenames, currpath)
+		if pathIndex != len(filenames) {
+			if filenames[pathIndex] == currpath {
+				return nil
+			}
+		}
+		fmt.Printf("Removing unmatched local file: %s\n", currpath)
+		return os.Remove(currpath)
+	}
+	err := filepath.Walk(s.Localdir, FileCheck)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error cleaning directory: %s\n", err)
 	}
 }
 
-func RunJob(sj *SyncJob, jobPool chan int, doneJobs chan *SyncJob) {
+// Run an upload or download job through a job pool
+func (sj *SyncJob) RunJob(jobPool chan int, doneJobs chan *SyncJob) {
 	jobPool <- 1
 	defer func() {
 		if r := recover(); r != nil {
@@ -163,7 +207,7 @@ func RunJob(sj *SyncJob, jobPool chan int, doneJobs chan *SyncJob) {
 		fmt.Println("Unknown job type")
 		panic("")
 	}
-	fmt.Printf("Hit max tries attempting to download: %s", sj.Key.Key)
+	fmt.Printf("Hit max tries attempting to download: %s\n", sj.Key.Key)
 }
 
 // Download a file from S3
@@ -180,32 +224,34 @@ func (sj *SyncJob) Download() bool {
 	}
 	// Construct file
 	fi, err := os.Create(target)
-	defer fi.Close()
 	if err != nil {
 		fmt.Printf("Could not create file: %s\n", target)
 		return false
 	}
+	defer fi.Close()
 	// Get response reader
 	responseReader, err := sj.Bucket.GetReader(sj.Key.Key)
-	defer responseReader.Close()
 	if err != nil {
 		fmt.Printf("Error making request for %s: %s\n",
 			sj.Key.Key, err)
 		return false
 	}
+	defer responseReader.Close()
 	// Write to file and hasher at the same time
-	h := md5.New()
-	t := io.MultiWriter(h, fi)
-	nbytes, err := io.Copy(t, responseReader)
+	// h := md5.New()
+	// t := io.MultiWriter(h, fi)
+	nbytes, err := io.Copy(fi, responseReader)
 	if err != nil {
 		fmt.Printf("Error writing file to disk: %s\n", err)
 		return false
 	}
-	fileHash := fmt.Sprintf("\"%x\"", h.Sum(nil))
-	if fileHash != sj.Key.ETag {
-		fmt.Printf("Hashes did not match for file: %s\n", sj.Key.Key)
-		return false
-	}
+	/*
+		fileHash := fmt.Sprintf("\"%x\"", h.Sum(nil))
+		if fileHash != sj.Key.ETag {
+			fmt.Printf("Hashes did not match for file: %s\n", sj.Key.Key)
+			return false
+		}
+	*/
 	fmt.Printf("[%10d bytes] Downloaded file: %s\n", nbytes, sj.Key.Key)
 	sj.IsSuccessful = true
 	return true
@@ -241,11 +287,11 @@ func (sj *SyncJob) CreateDownloadPath() (filename string, funcErr error) {
 // Is the local hash of the file the same as the key on s3?
 func (sj *SyncJob) IsHashSame() bool {
 	fi, err := os.Open(sj.Filepath)
-	defer fi.Close()
 	if err != nil {
 		// local file doesn't exist, so no they aren't the same
 		return false
 	}
+	defer fi.Close()
 	h := md5.New()
 	_, err = io.Copy(h, fi)
 	if err != nil {

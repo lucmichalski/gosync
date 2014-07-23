@@ -18,9 +18,11 @@ func main() {
 		cli.IntFlag{"concurrent, c", 20,
 			"number of concurrent transfers"},
 		cli.StringFlag{"log-level, l", "info", "log level"},
-		cli.StringFlag{"accesskey", "", "AWS access key"},
-		cli.StringFlag{"secretkey", "", "AWS secret key"},
+		cli.StringFlag{"accesskey, a", "", "AWS access key"},
+		cli.StringFlag{"secretkey, s", "", "AWS secret key"},
 		cli.IntFlag{"ntries", 2, "n tries to get the hash right"},
+		cli.BoolFlag{"full, f", "delete existing files/keys in " +
+			"TARGET which do not appear in SOURCE"},
 	}
 	app.Action = func(c *cli.Context) {
 		// This will default to reading the env variables if keys
@@ -61,9 +63,13 @@ func main() {
 				" a s3 path!\n")
 		}
 
+		if c.Bool("full") {
+			fmt.Println("Doing a full sync! You've been warned.")
+		}
+
 		// All ready. Construct a syncer and run it!
 		s := &sync.Syncer{remote, local, c.Int("concurrent"), auth,
-			mode, c.Int("ntries")}
+			mode, c.Int("ntries"), c.Bool("full")}
 		s.Run()
 	}
 	app.Run(os.Args)
