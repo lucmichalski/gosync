@@ -33,9 +33,10 @@ type Syncer struct {
 }
 
 func (s *Syncer) Run() {
-	bucketName, prefix := SplitQuery(s.S3Query)
-	fmt.Printf("Bucket name: %s\n", bucketName)
-	fmt.Printf("Prefix name: %s\n", prefix)
+	bucketName, prefix, postfix := SplitQuery(s.S3Query)
+	fmt.Printf("Bucket name : %s\n", bucketName)
+	fmt.Printf("Prefix name : %s\n", prefix)
+	fmt.Printf("Postfix name: %s\n", postfix)
 	bucket, err := FindBucket(bucketName, s.Auth)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Could not find bucket: %s\n",
@@ -43,13 +44,25 @@ func (s *Syncer) Run() {
 		os.Exit(2)
 	}
 	fmt.Printf("Looking for keys in: %s\n", bucket.Name)
-	s.DownloadBucket(bucket, prefix)
+	s.DownloadBucket(bucket, prefix, postfix)
 }
 
 // Given a query split it into a bucketname and a prefix
-func SplitQuery(query string) (bucket, prefix string) {
+func SplitQuery(query string) (bucket, prefix, postfix string) {
 	re := regexp.MustCompile("^s3://")
 	// strip `s3://` form query
+	nWildcards := strings.Count(query, "*")
+	if nWildcards == 0 {
+		postfix = ""
+	} else if nWildcards == 1 {
+		wildCardSplit := strings.Split(query, "*")
+		query = wildCardSplit[0]
+		postfix = wildCardSplit[1]
+	} else {
+		fmt.Fprintf(os.Stderr, "Sorry. Currently s3 paths can't "+
+			"contain more than one wildcard ('*')\n")
+		os.Exit(2)
+	}
 	query = string(re.ReplaceAll([]byte(query), []byte("")))
 	path := strings.Split(query, "/")
 	bucket = path[0]
@@ -81,9 +94,12 @@ type SyncJob struct {
 	NTries       int
 	Filepath     string
 	IsSuccessful bool
+	Postfix      *regexp.Regexp
 }
 
-func (s *Syncer) DownloadBucket(bucket *s3.Bucket, prefix string) {
+func (s *Syncer) DownloadBucket(bucket *s3.Bucket, prefix, postfix string) {
+	postfix = fmt.Sprintf("%s$", regexp.QuoteMeta(postfix))
+	postfixRegexp := regexp.MustCompile(postfix)
 	maxJobs := 0
 	if s.Concurrent > 0 {
 		maxJobs = s.Concurrent
@@ -114,6 +130,7 @@ func (s *Syncer) DownloadBucket(bucket *s3.Bucket, prefix string) {
 				NTries:       nTries,
 				Filepath:     "",
 				IsSuccessful: false,
+				Postfix:      postfixRegexp,
 			}
 			// Execute a goroutine to run the job
 			go sj.RunJob(jobPool, doneJobs)
@@ -134,10 +151,15 @@ func (s *Syncer) DownloadBucket(bucket *s3.Bucket, prefix string) {
 			break
 		}
 	}
+	// Full sync will also remove local files which don't have a matching
+	// path on the s3 bucket
 	if !s.Full {
 		return
 	}
-	// clean up target
+	// Time to do a cleanup!
+	fmt.Printf("Doing cleanup for full sync on dir: %s\n", s.Localdir)
+	// Collect all the filenames successfully synced from s3 to local and
+	// sort those names to allow for binary search (it's really fast)
 	filenames := make([]string, len(jobs))
 	i := 0
 	for _, job := range jobs {
@@ -147,23 +169,29 @@ func (s *Syncer) DownloadBucket(bucket *s3.Bucket, prefix string) {
 		filenames[i] = job.Filepath
 		i++
 	}
-	pathPrefix := filepath.Join(strings.Split(prefix, "/")...)
-	pathPrefix = filepath.Join(s.Localdir, pathPrefix)
-	pathPrefix = fmt.Sprintf("^%s", regexp.QuoteMeta(pathPrefix))
-	fmt.Printf("Path prefix: %s\n", pathPrefix)
-	prefixRegexp := regexp.MustCompile(pathPrefix)
-
 	filenames = filenames[:i]
 	sort.Strings(filenames)
 
+	// construct a prefix regexp to check if local file is within the scope
+	// of a sync
+	pathPrefix := filepath.Join(strings.Split(prefix, "/")...)
+	pathPrefix = filepath.Join(s.Localdir, pathPrefix)
+	pathPrefix = fmt.Sprintf("^%s", regexp.QuoteMeta(pathPrefix))
+	prefixRegexp := regexp.MustCompile(pathPrefix)
+
 	FileCheck := func(currpath string, info os.FileInfo, err error) error {
+		// We don't care about directories
 		if info.IsDir() {
 			return nil
 		}
-		if !prefixRegexp.Match([]byte(currpath)) {
+		// File must be within the "scope" of the sync
+		if !prefixRegexp.MatchString(currpath) {
 			return nil
 		}
-		// See if this path was succcessfully downloaded
+		if !postfixRegexp.MatchString(currpath) {
+			return nil
+		}
+		// See if this path is among those successfully synced
 		pathIndex := sort.SearchStrings(filenames, currpath)
 		if pathIndex != len(filenames) {
 			if filenames[pathIndex] == currpath {
@@ -176,6 +204,8 @@ func (s *Syncer) DownloadBucket(bucket *s3.Bucket, prefix string) {
 	err := filepath.Walk(s.Localdir, FileCheck)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error cleaning directory: %s\n", err)
+	} else {
+		fmt.Println("Full sync cleanup done")
 	}
 }
 
@@ -212,6 +242,12 @@ func (sj *SyncJob) RunJob(jobPool chan int, doneJobs chan *SyncJob) {
 
 // Download a file from S3
 func (sj *SyncJob) Download() bool {
+	// postfix is a regexp that looks for wildcards, e.g. `*.json`
+	if !sj.Postfix.MatchString(sj.Key.Key) {
+		fmt.Printf("Ignoring file: %s\n", sj.Key.Key)
+		sj.IsSuccessful = true
+		return true
+	}
 	target, err := sj.CreateDownloadPath()
 	if err != nil {
 		panic(err)
@@ -237,21 +273,12 @@ func (sj *SyncJob) Download() bool {
 		return false
 	}
 	defer responseReader.Close()
-	// Write to file and hasher at the same time
-	// h := md5.New()
-	// t := io.MultiWriter(h, fi)
+	// Read response to file
 	nbytes, err := io.Copy(fi, responseReader)
 	if err != nil {
 		fmt.Printf("Error writing file to disk: %s\n", err)
 		return false
 	}
-	/*
-		fileHash := fmt.Sprintf("\"%x\"", h.Sum(nil))
-		if fileHash != sj.Key.ETag {
-			fmt.Printf("Hashes did not match for file: %s\n", sj.Key.Key)
-			return false
-		}
-	*/
 	fmt.Printf("[%10d bytes] Downloaded file: %s\n", nbytes, sj.Key.Key)
 	sj.IsSuccessful = true
 	return true
