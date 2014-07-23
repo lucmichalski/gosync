@@ -10,7 +10,7 @@ Ensure you have Go 1.2 or greater installed and your GOPATH is set.
 
 Clone the repo:
 
-    go get github.com/yhat/gosync
+    go get -u github.com/yhat/gosync
 
 Change into the gosync directory and run make:
 
@@ -75,9 +75,33 @@ _Continue after interruption._ `gosync` compares each S3 key's MD5 hash against 
 
 ## Help
 
-For full list of options and commands:
+For full list of options and commands run `gosync -h`:
 
-    gosync -h
+```
+$ gosync -h
+NAME:
+   gosync - gosync OPTIONS SOURCE TARGET
+
+USAGE:
+   gosync [global options] command [command options] [arguments...]
+
+VERSION:
+   0.1.1
+
+COMMANDS:
+   help, h	Shows a list of commands or help for one command
+
+GLOBAL OPTIONS:
+   --concurrent, -c '20'	number of concurrent transfers
+   --log-level, -l 'info'	log level
+   --accesskey, -a 			AWS access key
+   --secretkey, -s 			AWS secret key
+   --ntries '2'				n tries to get the hash right
+   --full, -f				delete existing files/keys in TARGET which do not appear in SOURCE
+   --region, -r 'us-east-1'	Aws region
+   --help, -h				show help
+   --version, -v			print the version
+```
 
 ## Contributing
 
