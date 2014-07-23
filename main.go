@@ -1,10 +1,10 @@
 package main
 
 import (
-	sync "./gosync"
 	"fmt"
 	"github.com/codegangsta/cli"
 	"github.com/mitchellh/goamz/aws"
+	sync "github.com/yhat/gosync/gosync"
 	"os"
 	"regexp"
 )
