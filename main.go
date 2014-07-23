@@ -1,83 +1,70 @@
 package main
 
 import (
+	sync "./gosync"
 	"fmt"
-	"os"
-
-	"github.com/yhat/gosync/gosync"
-	"github.com/yhat/gosync/version"
-
-	log "github.com/cihub/seelog"
 	"github.com/codegangsta/cli"
 	"github.com/mitchellh/goamz/aws"
+	"os"
+	"regexp"
 )
 
 func main() {
 	app := cli.NewApp()
 	app.Name = "gosync"
 	app.Usage = "gosync OPTIONS SOURCE TARGET"
-	app.Version = version.Version()
+	app.Version = "0.1.0"
 	app.Flags = []cli.Flag{
-		cli.IntFlag{"concurrent, c", 20, "number of concurrent transfers"},
+		cli.IntFlag{"concurrent, c", 20,
+			"number of concurrent transfers"},
 		cli.StringFlag{"log-level, l", "info", "log level"},
 		cli.StringFlag{"accesskey", "", "AWS access key"},
 		cli.StringFlag{"secretkey", "", "AWS secret key"},
+		cli.IntFlag{"ntries", 2, "n tries to get the hash right"},
 	}
-
-	const concurrent = 20
-
 	app.Action = func(c *cli.Context) {
-		defer log.Flush()
-		setLogLevel(c.String("log-level"))
-
-		err := validateArgs(c)
-		exitOnError(err)
-
-		log.Debugf("Reading AWS credentials from AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY.")
-		// This will default to reading the env variables if
+		// This will default to reading the env variables if keys
+		// aren't passed ass command line arguments
 		auth, err := aws.GetAuth(c.String("accesskey"),
 			c.String("secretkey"))
-		exitOnError(err)
-
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Please specify both of your"+
+				" aws keys\n")
+			os.Exit(2)
+		}
+		if len(c.Args()) != 2 {
+			fmt.Fprintf(os.Stderr, "Invalid number of arguments."+
+				" Run `gosync -h` for help.\n")
+			os.Exit(2)
+		}
 		source := c.Args()[0]
-		log.Infof("Setting source to '%s'.", source)
-
+		fmt.Printf("Setting source to '%s'\n", source)
 		target := c.Args()[1]
-		log.Infof("Setting target to '%s'.", target)
+		fmt.Printf("Setting target to '%s'\n", target)
 
-		sync := gosync.NewSync(auth, source, target)
+		// Make sure there's one s3 path and one local path
+		s3Regexp := regexp.MustCompile("^s3://")
+		mode := sync.UPLOAD
+		local := source
+		remote := target
+		if s3Regexp.MatchString(source) {
+			if s3Regexp.MatchString(target) {
+				fmt.Fprintf(os.Stderr, "SOURCE and TARGET"+
+					" can't both be s3 paths!\n")
+				os.Exit(2)
+			}
+			mode = sync.DOWNLOAD
+			local = target
+			remote = source
+		} else if !s3Regexp.MatchString(target) {
+			fmt.Fprintf(os.Stderr, "SOURCE (x)or TARGET must be"+
+				" a s3 path!\n")
+		}
 
-		sync.Concurrent = c.Int("concurrent")
-		log.Infof("Setting concurrent transfers to '%d'.", sync.Concurrent)
-
-		err = sync.Sync()
-		exitOnError(err)
-
-		log.Infof("Syncing completed successfully.")
+		// All ready. Construct a syncer and run it!
+		s := &sync.Syncer{remote, local, c.Int("concurrent"), auth,
+			mode, c.Int("ntries")}
+		s.Run()
 	}
 	app.Run(os.Args)
-}
-
-func validateArgs(c *cli.Context) error {
-	if len(c.Args()) != 2 {
-		return fmt.Errorf("S3 URL and local directory required.")
-	}
-	return nil
-}
-
-func exitOnError(e error) {
-	if e != nil {
-		log.Errorf("Received error '%s'", e.Error())
-		log.Flush()
-		os.Exit(1)
-	}
-}
-
-func setLogLevel(level string) {
-	if level != "info" {
-		log.Infof("Setting log level '%s'.", level)
-	}
-	logConfig := fmt.Sprintf("<seelog minlevel='%s'>", level)
-	logger, _ := log.LoggerFromConfigAsBytes([]byte(logConfig))
-	log.ReplaceLogger(logger)
 }

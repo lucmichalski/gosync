@@ -4,6 +4,12 @@ Concurrently sync files and directories to/from S3.
 
 Fork of [brettweavnet](https://github.com/brettweavnet/gosync)'s repo.
 
+Attempted improvments:
+* Don't wait to read entire list of keys from bucket before downloading.
+* Stream everything. Never load entire file into memory.
+* Always check actions against md5 hash.
+* Selective downloads/uploads. (example: `s3://mybucket/*.json`)
+
 # Installation
 
 Ensure you have Go 1.2 or greater installed and your GOPATH is set.
