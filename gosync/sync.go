@@ -27,9 +27,10 @@ type Syncer struct {
 	Localdir   string
 	Concurrent int
 	Auth       aws.Auth
-	JobTypes   JobType
+	Mode       JobType
 	NTries     int
 	Full       bool
+	Region     aws.Region
 }
 
 func (s *Syncer) Run() {
@@ -37,12 +38,7 @@ func (s *Syncer) Run() {
 	fmt.Printf("Bucket name : %s\n", bucketName)
 	fmt.Printf("Prefix name : %s\n", prefix)
 	fmt.Printf("Postfix name: %s\n", postfix)
-	bucket, err := FindBucket(bucketName, s.Auth)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Could not find bucket: %s\n",
-			bucketName)
-		os.Exit(2)
-	}
+	bucket := s3.New(s.Auth, s.Region).Bucket(bucketName)
 	fmt.Printf("Looking for keys in: %s\n", bucket.Name)
 	s.DownloadBucket(bucket, prefix, postfix)
 }
@@ -114,9 +110,11 @@ func (s *Syncer) DownloadBucket(bucket *s3.Bucket, prefix, postfix string) {
 	lastKey := ""
 	// Iterate through bucket keys
 	for {
-		keyList, err := bucket.List(prefix, "", lastKey, 1000)
+		keyList, err := bucket.List(prefix, "", lastKey, 200)
 		if err != nil {
-			panic(err)
+			fmt.Fprintf(os.Stderr, "Could not find bucket '%s' in"+
+				" region '%s'\n", bucket.Name, s.Region.Name)
+			os.Exit(2)
 		}
 		keys := keyList.Contents
 		nKeys := len(keys)
