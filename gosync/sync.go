@@ -4,9 +4,9 @@ import (
 	"crypto/md5"
 	"errors"
 	"fmt"
-	"github.com/mitchellh/goamz/aws"
-	"github.com/mitchellh/goamz/s3"
+	"github.com/ericchiang/goamz/s3"
 	"io"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -26,11 +26,10 @@ type Syncer struct {
 	S3Query    string
 	Localdir   string
 	Concurrent int
-	Auth       aws.Auth
 	Mode       JobType
 	NTries     int
-	Full       bool
-	Region     aws.Region
+	FullSync   bool
+	S3Cli      *s3.S3
 }
 
 func (s *Syncer) Run() {
@@ -39,67 +38,108 @@ func (s *Syncer) Run() {
 	switch s.Mode {
 	case UPLOAD:
 		fmt.Println("Uploading file")
-		root, prefix, postfix := SplitLocalQuery(s.Localdir)
-		fmt.Printf("Rootdir     : %s\n", root)
-		fmt.Printf("Path prefix : %s\n", prefix)
-		fmt.Printf("Path postfix: %s\n", postfix)
-		// buckets := s3.New(s.Auth, s.Region).ListBuckets()
+		bucketName, prefix, postfix := SplitS3Query(s.S3Query)
+		fmt.Printf("Bucket name: %s\n", bucketName)
+		fmt.Printf("Prefix     : %s\n", prefix)
+		if postfix != "" {
+			fmt.Fprintf(os.Stderr,
+				"Wildcard not allowed in TARGET\n")
+			os.Exit(2)
+		}
+		tmp, localrule := SplitWildcard(s.Localdir)
+		s.Localdir = tmp
+		fmt.Printf("Localpath: %s\n", s.Localdir)
+		fmt.Printf("Localrule: %s\n", localrule)
+		localrule = fmt.Sprintf("%s$", regexp.QuoteMeta(localrule))
+		localruleRegexp := regexp.MustCompile(localrule)
+		fileRules := []*regexp.Regexp{localruleRegexp}
+		bucket := GetBucket(s.S3Cli, bucketName)
+		s.UploadDirectory(bucket, prefix, fileRules)
 	case DOWNLOAD:
 		bucketName, prefix, postfix := SplitS3Query(s.S3Query)
 		fmt.Printf("Bucket name : %s\n", bucketName)
-		fmt.Printf("Prefix name : %s\n", prefix)
-		fmt.Printf("Postfix name: %s\n", postfix)
-		bucket := s3.New(s.Auth, s.Region).Bucket(bucketName)
+		fmt.Printf("Prefix      : %s\n", prefix)
+		fmt.Printf("Postfix rule: %s\n", postfix)
+		// Generate regexp rule from postfix
+		postfix = fmt.Sprintf("%s$", regexp.QuoteMeta(postfix))
+		postfixRegexp := regexp.MustCompile(postfix)
+		fileRules := []*regexp.Regexp{postfixRegexp}
+		bucket := s.S3Cli.Bucket(bucketName)
 		fmt.Printf("Looking for keys in: %s\n", bucket.Name)
-		s.DownloadBucket(bucket, prefix, postfix)
+		s.DownloadBucket(bucket, prefix, fileRules)
 	}
 }
 
 // Given a query split it into a bucketname and a prefix
 func SplitS3Query(query string) (bucket, prefix, postfix string) {
-	nWildcards := strings.Count(query, "*")
-	if nWildcards == 0 {
-		postfix = ""
-	} else if nWildcards == 1 {
-		wildCardSplit := strings.Split(query, "*")
-		query = wildCardSplit[0]
-		postfix = wildCardSplit[1]
-	} else {
-		fmt.Fprintf(os.Stderr, "Sorry. Currently s3 paths can't "+
-			"contain more than one wildcard ('*')\n")
-		os.Exit(2)
-	}
+	query, postfix = SplitWildcard(query)
 	path := strings.Split(query, "/")
 	bucket = path[0]
 	prefix = strings.Join(path[1:], "/")
 	return
 }
 
-// Given a query split it into a root directory and a prefix
-func SplitLocalQuery(query string) (root, prefix, postfix string) {
-	// windows...
-	sep := string(os.PathSeparator)
-	pathSteps := strings.Split(query, sep)
-	root = pathSteps[0] + sep
-	prefix = filepath.Join(pathSteps[1:]...)
-	postfix = ""
+// Split along wildcard and make sure there's no additional
+func SplitWildcard(query string) (prequery, postfix string) {
+	wildcardSplit := strings.Split(query, "*")
+	switch len(wildcardSplit) {
+	case 1:
+		prequery = query
+		postfix = ""
+	case 2:
+		prequery = wildcardSplit[0]
+		postfix = wildcardSplit[1]
+	default:
+		fmt.Fprintf(os.Stderr, "Sorry. Currently SOURCE paths can't "+
+			"contain more than one wildcard ('*')\n")
+		os.Exit(2)
+	}
 	return
 }
 
-type SyncJob struct {
-	Bucket       *s3.Bucket
-	Key          s3.Key
-	Localdir     string
-	JobType      JobType
-	NTries       int
-	Filepath     string
-	IsSuccessful bool
-	Postfix      *regexp.Regexp
+// Given a bucket name either get that bucket or create it if it doesn't exist
+func GetBucket(s3Cli *s3.S3, bucketName string) *s3.Bucket {
+	fmt.Printf("Searching for bucket '%s' on s3\n", bucketName)
+	buckets, err := s3Cli.ListBuckets()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error attempting to list buckets on "+
+			"S3\n")
+		os.Exit(2)
+	}
+	for _, bucket := range buckets.Buckets {
+		if bucket.Name == bucketName {
+			fmt.Println("Found bucket!")
+			return &bucket
+		}
+	}
+	// if not create a private bucket
+	newBucket := s3Cli.Bucket(bucketName)
+	err = newBucket.PutBucket(s3.Private)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error attempting to create bucket "+
+			"'%s'\n", bucketName)
+	}
+	return newBucket
 }
 
-func (s *Syncer) DownloadBucket(bucket *s3.Bucket, prefix, postfix string) {
-	postfix = fmt.Sprintf("%s$", regexp.QuoteMeta(postfix))
-	postfixRegexp := regexp.MustCompile(postfix)
+type SyncJob struct {
+	// Upload or download?
+	JobType JobType
+	// Bucket and key to upload/download from/to
+	Bucket *s3.Bucket
+	Key    s3.Key
+	// Local directory and relative path to upload/download from/to
+	Localdir string
+	Filepath string
+	// All synced files must match these rules
+	Rules        []*regexp.Regexp
+	Prefix       string
+	NTries       int
+	IsSuccessful bool
+}
+
+func (s *Syncer) DownloadBucket(bucket *s3.Bucket, prefix string,
+	rules []*regexp.Regexp) {
 	maxJobs := 0
 	if s.Concurrent > 0 {
 		maxJobs = s.Concurrent
@@ -116,14 +156,14 @@ func (s *Syncer) DownloadBucket(bucket *s3.Bucket, prefix, postfix string) {
 	for {
 		keyList, err := bucket.List(prefix, "", lastKey, 200)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Could not find bucket '%s' in"+
-				" region '%s'\n", bucket.Name, s.Region.Name)
+			fmt.Fprintf(os.Stderr,
+				"Could not find bucket '%s' in region '%s'\n",
+				bucket.Name, s.S3Cli.Region.Name)
 			os.Exit(2)
 		}
 		keys := keyList.Contents
-		nKeys := len(keys)
+		nJobs += len(keys)
 		for _, key := range keys {
-			nJobs++
 			sj := &SyncJob{
 				Bucket:       bucket,
 				Key:          key,
@@ -131,8 +171,9 @@ func (s *Syncer) DownloadBucket(bucket *s3.Bucket, prefix, postfix string) {
 				JobType:      DOWNLOAD,
 				NTries:       nTries,
 				Filepath:     "",
+				Prefix:       prefix,
 				IsSuccessful: false,
-				Postfix:      postfixRegexp,
+				Rules:        rules,
 			}
 			// Execute a goroutine to run the job
 			go sj.RunJob(jobPool, doneJobs)
@@ -141,7 +182,7 @@ func (s *Syncer) DownloadBucket(bucket *s3.Bucket, prefix, postfix string) {
 		if !keyList.IsTruncated {
 			break
 		}
-		lastKey = keys[nKeys-1].Key
+		lastKey = keys[nJobs-1].Key
 	}
 	jobs := make([]*SyncJob, nJobs)
 	// Wait for all jobs to finish
@@ -155,7 +196,7 @@ func (s *Syncer) DownloadBucket(bucket *s3.Bucket, prefix, postfix string) {
 	}
 	// Full sync will also remove local files which don't have a matching
 	// path on the s3 bucket
-	if !s.Full {
+	if !s.FullSync {
 		return
 	}
 	// Time to do a cleanup!
@@ -181,17 +222,17 @@ func (s *Syncer) DownloadBucket(bucket *s3.Bucket, prefix, postfix string) {
 	pathPrefix = fmt.Sprintf("^%s", regexp.QuoteMeta(pathPrefix))
 	prefixRegexp := regexp.MustCompile(pathPrefix)
 
+	rules = append(rules, prefixRegexp)
+
 	FileCheck := func(currpath string, info os.FileInfo, err error) error {
 		// We don't care about directories
 		if info.IsDir() {
 			return nil
 		}
-		// File must be within the "scope" of the sync
-		if !prefixRegexp.MatchString(currpath) {
-			return nil
-		}
-		if !postfixRegexp.MatchString(currpath) {
-			return nil
+		for _, rule := range rules {
+			if !rule.MatchString(currpath) {
+				return nil
+			}
 		}
 		// See if this path is among those successfully synced
 		pathIndex := sort.SearchStrings(filenames, currpath)
@@ -208,6 +249,59 @@ func (s *Syncer) DownloadBucket(bucket *s3.Bucket, prefix, postfix string) {
 		fmt.Fprintf(os.Stderr, "Error cleaning directory: %s\n", err)
 	} else {
 		fmt.Println("Full sync cleanup done")
+	}
+}
+
+func (s *Syncer) UploadDirectory(bucket *s3.Bucket, prefix string,
+	rules []*regexp.Regexp) {
+	maxJobs := 0
+	if s.Concurrent > 0 {
+		maxJobs = s.Concurrent
+	}
+	nTries := 1
+	if s.NTries > 0 {
+		nTries = s.NTries
+	}
+	jobPool := make(chan int, maxJobs)
+	doneJobs := make(chan *SyncJob)
+	nJobs := 0
+	UpWalk := func(currpath string, info os.FileInfo, err error) error {
+		if info.IsDir() {
+			return nil
+		}
+		for _, rule := range rules {
+			if !rule.MatchString(currpath) {
+				return nil
+			}
+		}
+		sj := &SyncJob{
+			Bucket:       bucket,
+			Localdir:     s.Localdir,
+			JobType:      UPLOAD,
+			NTries:       nTries,
+			Filepath:     currpath,
+			Prefix:       prefix,
+			IsSuccessful: false,
+			Rules:        rules,
+		}
+		nJobs++
+		go sj.RunJob(jobPool, doneJobs)
+		return nil
+	}
+	err := filepath.Walk(s.Localdir, UpWalk)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error uploading directory: %s\n", err)
+		os.Exit(2)
+	}
+	jobs := make([]*SyncJob, nJobs)
+	// Wait for all jobs to finish
+	for {
+		j := <-doneJobs
+		nJobs--
+		jobs[nJobs] = j
+		if nJobs == 0 {
+			break
+		}
 	}
 }
 
@@ -244,11 +338,14 @@ func (sj *SyncJob) RunJob(jobPool chan int, doneJobs chan *SyncJob) {
 
 // Download a file from S3
 func (sj *SyncJob) Download() bool {
-	// postfix is a regexp that looks for wildcards, e.g. `*.json`
-	if !sj.Postfix.MatchString(sj.Key.Key) {
-		fmt.Printf("Ignoring file: %s\n", sj.Key.Key)
-		sj.IsSuccessful = true
-		return true
+	// Make sure this key matches all Regexp rules passed to the job.
+	// For example a rule could require a certain file extention.
+	for _, rule := range sj.Rules {
+		if !rule.MatchString(sj.Key.Key) {
+			fmt.Printf("Ignoring file: %s\n", sj.Key.Key)
+			sj.IsSuccessful = true
+			return true
+		}
 	}
 	target, err := sj.CreateDownloadPath()
 	if err != nil {
@@ -272,7 +369,7 @@ func (sj *SyncJob) Download() bool {
 	responseReader, err := sj.Bucket.GetReader(keyName)
 	if err != nil {
 		fmt.Printf("Error making request for %s: %s\n",
-			sj.Key.Key, err)
+			keyName, err)
 		return false
 	}
 	defer responseReader.Close()
@@ -285,6 +382,14 @@ func (sj *SyncJob) Download() bool {
 	fmt.Printf("[%10d bytes] Downloaded file: %s\n", nbytes, sj.Key.Key)
 	sj.IsSuccessful = true
 	return true
+}
+
+func EscapeS3Key(s3key string) string {
+	pathParts := strings.Split(s3key, "/")
+	for i := 0; i < len(pathParts); i++ {
+		pathParts[i] = url.QueryEscape(pathParts[i])
+	}
+	return strings.Join(pathParts, "/")
 }
 
 // Have to create a filepath to download file to.
@@ -308,7 +413,7 @@ func (sj *SyncJob) CreateDownloadPath() (filename string, funcErr error) {
 				return
 			}
 		}
-		target = path.Join(target, pathPart)
+		target = filepath.Join(target, pathPart)
 	}
 	filename = target
 	return
@@ -335,7 +440,20 @@ func (sj *SyncJob) IsHashSame() bool {
 
 // Upload a file to S3
 func (sj *SyncJob) Upload() bool {
-	fmt.Printf("Uploading file %s to %s:%s\n", sj.Filepath,
-		sj.Bucket.Name, sj.Key.Key)
+	relpath, _ := filepath.Rel(sj.Localdir, sj.Filepath)
+	// to slash (from os file sep) for s3 path upload
+	keypath := filepath.ToSlash(relpath)
+	keypath = path.Join(sj.Prefix, keypath)
+	_, err := os.Open(sj.Filepath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error opening file for upload:%s\n",
+			sj.Filepath)
+	}
+	_, err = sj.Bucket.Head(keypath)
+	if err != nil {
+		// File isn't already on s3
+	} else {
+
+	}
 	return true
 }

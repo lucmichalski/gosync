@@ -1,4 +1,4 @@
-all: fmt deps test
+all: deps test
 	@echo "Building."
 	@mkdir -p bin/
 	go build -v -o bin/gosync .

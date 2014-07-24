@@ -3,8 +3,10 @@ package main
 import (
 	"fmt"
 	"github.com/codegangsta/cli"
+	"github.com/ericchiang/goamz/s3"
 	"github.com/mitchellh/goamz/aws"
 	sync "github.com/yhat/gosync/gosync"
+	// "./gosync"
 	"os"
 	"regexp"
 )
@@ -79,10 +81,18 @@ func main() {
 			}
 			os.Exit(2)
 		}
+		s3Cli := s3.New(auth, region)
 
 		// All ready. Construct a syncer and run it!
-		s := &sync.Syncer{remote, local, c.Int("concurrent"), auth,
-			mode, c.Int("ntries"), c.Bool("full"), region}
+		s := &sync.Syncer{
+			S3Query:    remote,
+			Localdir:   local,
+			Concurrent: c.Int("concurrent"),
+			Mode:       mode,
+			NTries:     c.Int("ntries"),
+			FullSync:   c.Bool("full"),
+			S3Cli:      s3Cli,
+		}
 		s.Run()
 	}
 	app.Run(os.Args)
