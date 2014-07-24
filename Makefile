@@ -1,13 +1,9 @@
-all: deps test
+all: deps
 	@echo "Building."
-	@mkdir -p bin/
-	go build -v -o bin/gosync .
+	go install
 deps:
 	@echo "Getting Dependencies."
 	go get -d -v ./...
-test: deps
-	@echo "Testing."
-	go test ./...
 fmt:
 	@echo "Formatting."
 	gofmt -w .

@@ -182,7 +182,7 @@ func (s *Syncer) DownloadBucket(bucket *s3.Bucket, prefix string,
 		if !keyList.IsTruncated {
 			break
 		}
-		lastKey = keys[nJobs-1].Key
+		lastKey = keys[len(keys)-1].Key
 	}
 	jobs := make([]*SyncJob, nJobs)
 	// Wait for all jobs to finish

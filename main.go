@@ -6,7 +6,6 @@ import (
 	"github.com/ericchiang/goamz/s3"
 	"github.com/mitchellh/goamz/aws"
 	sync "github.com/yhat/gosync/gosync"
-	// "./gosync"
 	"os"
 	"regexp"
 )
