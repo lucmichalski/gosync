@@ -12,11 +12,6 @@ Clone the repo:
 
     go get -u github.com/yhat/gosync
 
-Change into the gosync directory and run make:
-
-    cd $GOPATH/src/github.com/yhat/gosync/
-    make
-
 # Setup
 
 Set environment variables:
