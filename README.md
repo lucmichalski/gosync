@@ -29,7 +29,37 @@ Or specify them later as command line arguments:
 
 ## Syncing from local directory to S3
 
-Under refactoring as of version `0.1.0`
+General upload.
+
+    gosync local_dir s3://bucket
+    
+Upload a sub directory to a bucket. This example will sync all the files in `subdir` as keys in `bucket`.
+
+    gosync local_dir/subdir s3://bucket
+
+Upload with a prefix. This example will prepend all resuling keys with `prefix` durning the sync.
+
+    gosync local_dir s3://bucket/prefix
+    
+
+Specify number of concurrent goroutines for uploading files (default is 20):
+
+    gosync --concurrent 30 s3://bucket local_dir
+    
+_Upload with a wildcard._ Only upload files from a local directory which match an extension.
+
+    gosync local_dir*.json s3://bucket
+    
+_Full sync._ Delete S3 keys that don't appear in local directory.
+
+    # under development as of 1.1.3
+
+_Continue after interruption._ `gosync` compares each local file's MD5 hash against its corresponding S3 key's hash to see if it's already uploaded it. You can continue after an interruption without having to re-upload the entire local directory.
+
+    $ gosync local_dir s3://bucket
+    [     26486 bytes] Uploaded file: local_dir/mypicture.png
+    $ gosync local_dir s3://bucket
+    File already uploaded: local_dir/mypicture.png
 
 ## Syncing from S3 to local directory
 
@@ -42,13 +72,14 @@ Download only files from a bucket matching a prefix.
 
     gosync s3://bucket/subdir local_dir
     
-Download with a wildcard.
-
-    gosync s3://bucket/subdir*.json local_dir
-    
 Specify number of concurrent goroutines for downloading files (default is 20):
 
     gosync --concurrent 30 s3://bucket local_dir
+    
+_Download with a wildcard._ Only download keys from a bucket which match an extension.
+
+    gosync s3://bucket/subdir*.json local_dir
+
     
 _Full sync._ Delete local files that don't appear on S3.
 
@@ -81,21 +112,20 @@ USAGE:
    gosync [global options] command [command options] [arguments...]
 
 VERSION:
-   0.1.1
+   0.1.3
 
 COMMANDS:
    help, h	Shows a list of commands or help for one command
 
 GLOBAL OPTIONS:
    --concurrent, -c '20'	number of concurrent transfers
-   --log-level, -l 'info'	log level
-   --accesskey, -a 			AWS access key
-   --secretkey, -s 			AWS secret key
-   --ntries '2'				n tries to get the hash right
-   --full, -f				delete existing files/keys in TARGET which do not appear in SOURCE
+   --log-level, -l 'info'   log level
+   --accesskey, -a          AWS access key
+   --secretkey, -s 		    AWS secret key
+   --full, -f			    delete existing files/keys in TARGET which do not appear in SOURCE
    --region, -r 'us-east-1'	Aws region
-   --help, -h				show help
-   --version, -v			print the version
+   --help, -h			    show help
+   --version, -v		    print the version
 ```
 
 ## Contributing
