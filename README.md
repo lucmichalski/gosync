@@ -6,11 +6,28 @@ Fork of [brettweavnet](https://github.com/brettweavnet/gosync)'s repo.
 
 # Installation
 
-Ensure you have Go 1.2 or greater installed and your GOPATH is set.
-
-Clone the repo:
+Install from source:
 
     go get -u github.com/yhat/gosync
+
+Donwload binary (compiled with [gox](https://github.com/mitchellh/gox)):
+
+* [darwin_386](https://s3.amazonaws.com/gosync/darwin_386/gosync)
+* [darwin_amd64](https://s3.amazonaws.com/gosync/darwin_amd64/gosync)
+* [freebsd_386](https://s3.amazonaws.com/gosync/freebsd_386/gosync)
+* [freebsd_amd64](https://s3.amazonaws.com/gosync/freebsd_amd64/gosync)
+* [freebsd_arm](https://s3.amazonaws.com/gosync/freebsd_arm/gosync)
+* [linux_386](https://s3.amazonaws.com/gosync/linux_386/gosync)
+* [linux_amd64](https://s3.amazonaws.com/gosync/linux_amd64/gosync)
+* [linux_arm](https://s3.amazonaws.com/gosync/linux_arm/gosync)
+* [netbsd_386](https://s3.amazonaws.com/gosync/netbsd_386/gosync)
+* [netbsd_amd64](https://s3.amazonaws.com/gosync/netbsd_amd64/gosync)
+* [netbsd_arm](https://s3.amazonaws.com/gosync/netbsd_arm/gosync)
+* [openbsd_386](https://s3.amazonaws.com/gosync/openbsd_386/gosync)
+* [openbsd_amd64](https://s3.amazonaws.com/gosync/openbsd_amd64/gosync)
+* [plan9_386](https://s3.amazonaws.com/gosync/plan9_386/gosync)
+* [windows_386.exe](https://s3.amazonaws.com/gosync/windows_386.exe/gosync)
+* [windows_amd64.exe](https://s3.amazonaws.com/gosync/windows_amd64.exe/gosync)
 
 # Setup
 
@@ -52,7 +69,7 @@ _Upload with a wildcard._ Only upload files from a local directory which match a
     
 _Full sync._ Delete S3 keys that don't appear in local directory.
 
-    # under development as of 1.1.3
+    # under development as of version 0.1.3
 
 _Continue after interruption._ `gosync` compares each local file's MD5 hash against its corresponding S3 key's hash to see if it's already uploaded it. You can continue after an interruption without having to re-upload the entire local directory.
 
