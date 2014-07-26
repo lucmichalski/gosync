@@ -1,9 +1,15 @@
-all: deps
-	@echo "Building."
+.PHONY: all build install deps fmt
+
+all: deps build
+
+build: main.go gosync/sync.go jobs/jobs.go
+	go build ./...
+
+install: main.go gosync/sync.go jobs/jobs.go
 	go install
-deps:
-	@echo "Getting Dependencies."
+
+deps: main.go gosync/sync.go jobs/jobs.go
 	go get -d -v ./...
-fmt:
-	@echo "Formatting."
-	gofmt -w .
+
+fmt: main.go gosync/sync.go jobs/jobs.go 
+	go fmt ./...

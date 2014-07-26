@@ -1,12 +1,12 @@
-package sync
+package gosync
 
 import (
 	"crypto/md5"
 	"errors"
 	"fmt"
 	"github.com/ericchiang/goamz/s3"
+	"github.com/yhat/gosync/jobs"
 	"io"
-	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -15,86 +15,135 @@ import (
 	"strings"
 )
 
-type JobType int
-
-const (
-	UPLOAD JobType = iota
-	DOWNLOAD
-)
-
 type Syncer struct {
-	S3Query    string
+	BucketName string
+	KeyPrefix  string
 	Localdir   string
-	Concurrent int
-	Mode       JobType
-	NTries     int
+	JobRunner  *jobs.JobRunner
 	FullSync   bool
 	S3Cli      *s3.S3
+	Rules      []*regexp.Regexp
 }
 
-func (s *Syncer) Run() {
-	re := regexp.MustCompile("^s3://")
-	s.S3Query = string(re.ReplaceAll([]byte(s.S3Query), []byte("")))
-	switch s.Mode {
-	case UPLOAD:
-		fmt.Println("Uploading file")
-		bucketName, prefix, postfix := SplitS3Query(s.S3Query)
-		fmt.Printf("Bucket name: %s\n", bucketName)
-		fmt.Printf("Prefix     : %s\n", prefix)
-		if postfix != "" {
-			fmt.Fprintf(os.Stderr,
-				"Wildcard not allowed in TARGET\n")
-			os.Exit(2)
-		}
-		tmp, localrule := SplitWildcard(s.Localdir)
-		s.Localdir = tmp
-		fmt.Printf("Localpath: %s\n", s.Localdir)
-		fmt.Printf("Localrule: %s\n", localrule)
-		localrule = fmt.Sprintf("%s$", regexp.QuoteMeta(localrule))
-		localruleRegexp := regexp.MustCompile(localrule)
-		fileRules := []*regexp.Regexp{localruleRegexp}
-		bucket := GetBucket(s.S3Cli, bucketName)
-		s.UploadDirectory(bucket, prefix, fileRules)
-	case DOWNLOAD:
-		bucketName, prefix, postfix := SplitS3Query(s.S3Query)
-		fmt.Printf("Bucket name : %s\n", bucketName)
-		fmt.Printf("Prefix      : %s\n", prefix)
-		fmt.Printf("Postfix rule: %s\n", postfix)
-		// Generate regexp rule from postfix
-		postfix = fmt.Sprintf("%s$", regexp.QuoteMeta(postfix))
-		postfixRegexp := regexp.MustCompile(postfix)
-		fileRules := []*regexp.Regexp{postfixRegexp}
-		bucket := s.S3Cli.Bucket(bucketName)
-		fmt.Printf("Looking for keys in: %s\n", bucket.Name)
-		s.DownloadBucket(bucket, prefix, fileRules)
+// A job to upload a file to S3
+type UploadJob struct {
+	Localfile    string
+	Localdir     string
+	Bucket       *s3.Bucket
+	KeyPrefix    string
+	ResultKey    s3.Key
+	IsSuccessful bool
+}
+
+func (uj UploadJob) Run() (jobs.Job, error) {
+	relPath, err := filepath.Rel(uj.Localdir, uj.Localfile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Could not get relative path of file:"+
+			" %s\n", uj.Localfile)
+		return uj, err
 	}
+	// Filepaths may use backslashes (PCs), must convert to slash for S3.
+	s3Path := filepath.ToSlash(relPath)
+	s3Path = path.Join(uj.KeyPrefix, s3Path)
+	// Open file
+	fi, err := os.Open(uj.Localfile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error opening file: %s\n",
+			uj.Localfile)
+		return uj, err
+	}
+	defer fi.Close()
+	// compute file hash and count number of bytes in file
+	h := md5.New()
+	nbytes, err := io.Copy(h, fi)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error computing file hash: %s\n",
+			uj.Localfile)
+		return uj, err
+	}
+	filehash := fmt.Sprintf("\"%x\"", h.Sum(nil))
+	// Check if there's a Key with the same hash on s3
+	if AlreadyUploaded(uj.Bucket, s3Path, filehash) {
+		fmt.Printf("File already uploaded: %s\n", uj.Localfile)
+		uj.IsSuccessful = true
+		return uj, nil
+	}
+	// bring it back yal
+	currOffset, err := fi.Seek(0, os.SEEK_SET)
+	if err != nil || currOffset != 0 {
+		fmt.Printf("IO error seeking file: %s\n", uj.Localfile)
+		return uj, err
+	}
+	// Try to upload the context of a file to S3
+	err = uj.Bucket.PutReader(s3Path, fi, nbytes, "content-type",
+		s3.Private)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error uploading file '%s' to S3: %s",
+			uj.Localfile, err)
+		return uj, err
+	}
+	fmt.Printf("[%10d bytes] Uploaded file: '%s'\n", nbytes,
+		uj.Localfile)
+	uj.IsSuccessful = true
+	return uj, nil
 }
 
-// Given a query split it into a bucketname and a prefix
-func SplitS3Query(query string) (bucket, prefix, postfix string) {
-	query, postfix = SplitWildcard(query)
-	path := strings.Split(query, "/")
-	bucket = path[0]
-	prefix = strings.Join(path[1:], "/")
-	return
+// Check if a file has already been uploaded by comparing hash
+func AlreadyUploaded(bucket *s3.Bucket, keyPath, filehash string) bool {
+	head, err := bucket.Head(keyPath)
+	if err != nil {
+		return false
+	}
+	eTag, ok := head.Header["Etag"]
+	if !ok {
+		return false
+	}
+	if len(eTag) < 1 {
+		return false
+	}
+	return eTag[0] == filehash
 }
 
-// Split along wildcard and make sure there's no additional
-func SplitWildcard(query string) (prequery, postfix string) {
-	wildcardSplit := strings.Split(query, "*")
-	switch len(wildcardSplit) {
-	case 1:
-		prequery = query
-		postfix = ""
-	case 2:
-		prequery = wildcardSplit[0]
-		postfix = wildcardSplit[1]
-	default:
-		fmt.Fprintf(os.Stderr, "Sorry. Currently SOURCE paths can't "+
-			"contain more than one wildcard ('*')\n")
+func (s *Syncer) Upload() {
+	// Get bucket, if that bucket doesn't exist create it
+	bucket := GetBucket(s.S3Cli, s.BucketName)
+	nJobs := 0
+	walkFunc := func(currpath string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			return nil
+		}
+		// The file must match all regexp rules
+		for _, rule := range s.Rules {
+			if !rule.MatchString(currpath) {
+				return nil
+			}
+		}
+		uj := UploadJob{
+			Localfile:    currpath,
+			Localdir:     s.Localdir,
+			Bucket:       bucket,
+			KeyPrefix:    s.KeyPrefix,
+			IsSuccessful: false,
+		}
+		nJobs++
+		s.JobRunner.RunJob(uj)
+		return nil
+	}
+	err := filepath.Walk(s.Localdir, walkFunc)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error uploading directory: %s\n", err)
 		os.Exit(2)
 	}
-	return
+	jobs := make([]UploadJob, nJobs)
+	for i := 0; i < nJobs; i++ {
+		j := s.JobRunner.Get()
+		// Type cast back to an UploadJob
+		job, _ := j.(UploadJob)
+		jobs[i] = job
+	}
 }
 
 // Given a bucket name either get that bucket or create it if it doesn't exist
@@ -108,53 +157,78 @@ func GetBucket(s3Cli *s3.S3, bucketName string) *s3.Bucket {
 	}
 	for _, bucket := range buckets.Buckets {
 		if bucket.Name == bucketName {
-			fmt.Println("Found bucket!")
 			return &bucket
 		}
 	}
+	fmt.Printf("Bucket '%s' not found: creating\n", bucketName)
 	// if not create a private bucket
 	newBucket := s3Cli.Bucket(bucketName)
 	err = newBucket.PutBucket(s3.Private)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error attempting to create bucket "+
 			"'%s'\n", bucketName)
+		os.Exit(2)
 	}
 	return newBucket
 }
 
-type SyncJob struct {
-	// Upload or download?
-	JobType JobType
-	// Bucket and key to upload/download from/to
-	Bucket *s3.Bucket
-	Key    s3.Key
-	// Local directory and relative path to upload/download from/to
-	Localdir string
-	Filepath string
-	// All synced files must match these rules
-	Rules        []*regexp.Regexp
-	Prefix       string
-	NTries       int
+// A job to download a file from S3
+type DownloadJob struct {
+	Bucket       *s3.Bucket
+	Key          s3.Key
+	Localdir     string
+	ResultFile   string
 	IsSuccessful bool
 }
 
-func (s *Syncer) DownloadBucket(bucket *s3.Bucket, prefix string,
-	rules []*regexp.Regexp) {
-	maxJobs := 0
-	if s.Concurrent > 0 {
-		maxJobs = s.Concurrent
+// Download a file from S3
+func (dj DownloadJob) Run() (jobs.Job, error) {
+	target, err := CreateDownloadPath(dj.Key, dj.Localdir)
+	if err != nil {
+		fmt.Printf("Error getting local file path: %s\n", err)
+		return dj, nil
 	}
-	nTries := 1
-	if s.NTries > 0 {
-		nTries = s.NTries
+	dj.ResultFile = target
+	if IsHashSame(dj.Key.ETag, target) {
+		fmt.Printf("File already downloaded: %s\n", dj.Key.Key)
+		dj.IsSuccessful = true
+		return dj, nil
 	}
-	jobPool := make(chan int, maxJobs)
-	doneJobs := make(chan *SyncJob)
+	// Construct file
+	fi, err := os.Create(target)
+	if err != nil {
+		fmt.Printf("Could not create file: %s\n", target)
+		return dj, err
+	}
+	defer fi.Close()
+	// Spaces need to be "+"
+	keyName := strings.Replace(dj.Key.Key, " ", "+", -1)
+	// Get response reader
+	responseReader, err := dj.Bucket.GetReader(keyName)
+	if err != nil {
+		fmt.Printf("Error making request for %s: %s\n", keyName, err)
+		return dj, err
+	}
+	defer responseReader.Close()
+	// Read response to file
+	nbytes, err := io.Copy(fi, responseReader)
+	if err != nil {
+		fmt.Printf("Error writing file to disk: %s\n", err)
+		return dj, err
+	}
+	fmt.Printf("[%10d bytes] Downloaded file: %s\n", nbytes, dj.Key.Key)
+	dj.IsSuccessful = true
+	return dj, nil
+}
+
+func (s *Syncer) Download() {
+	// Split the S3 path into a bucket/prefix combination
+	bucket := s.S3Cli.Bucket(s.BucketName)
 	nJobs := 0
 	lastKey := ""
 	// Iterate through bucket keys
 	for {
-		keyList, err := bucket.List(prefix, "", lastKey, 200)
+		keyList, err := bucket.List(s.KeyPrefix, "", lastKey, 200)
 		if err != nil {
 			fmt.Fprintf(os.Stderr,
 				"Could not find bucket '%s' in region '%s'\n",
@@ -162,21 +236,30 @@ func (s *Syncer) DownloadBucket(bucket *s3.Bucket, prefix string,
 			os.Exit(2)
 		}
 		keys := keyList.Contents
-		nJobs += len(keys)
 		for _, key := range keys {
-			sj := &SyncJob{
-				Bucket:       bucket,
-				Key:          key,
-				Localdir:     s.Localdir,
-				JobType:      DOWNLOAD,
-				NTries:       nTries,
-				Filepath:     "",
-				Prefix:       prefix,
-				IsSuccessful: false,
-				Rules:        rules,
+			runJob := true
+			// Make sure this key matches all Regexp rules passed
+			// to the job. For example a rule could require a
+			// certain file extention.
+			for _, rule := range s.Rules {
+				if !rule.MatchString(key.Key) {
+					fmt.Printf("Ignoring key: %s\n",
+						key.Key)
+					runJob = false
+					break
+				}
 			}
-			// Execute a goroutine to run the job
-			go sj.RunJob(jobPool, doneJobs)
+			if runJob {
+				dj := DownloadJob{
+					Bucket:       bucket,
+					Key:          key,
+					Localdir:     s.Localdir,
+					IsSuccessful: false,
+				}
+				// Execute a goroutine to run the job
+				s.JobRunner.RunJob(dj)
+				nJobs++
+			}
 		}
 		// Once the returned list is not truncated we're done!
 		if !keyList.IsTruncated {
@@ -184,15 +267,13 @@ func (s *Syncer) DownloadBucket(bucket *s3.Bucket, prefix string,
 		}
 		lastKey = keys[len(keys)-1].Key
 	}
-	jobs := make([]*SyncJob, nJobs)
+	jobs := make([]DownloadJob, nJobs)
 	// Wait for all jobs to finish
-	for {
-		j := <-doneJobs
-		nJobs--
-		jobs[nJobs] = j
-		if nJobs == 0 {
-			break
-		}
+	for i := 0; i < nJobs; i++ {
+		j := s.JobRunner.Get()
+		// Typecast back to DownloadJob
+		job, _ := j.(DownloadJob)
+		jobs[i] = job
 	}
 	// Full sync will also remove local files which don't have a matching
 	// path on the s3 bucket
@@ -206,22 +287,22 @@ func (s *Syncer) DownloadBucket(bucket *s3.Bucket, prefix string,
 	filenames := make([]string, len(jobs))
 	i := 0
 	for _, job := range jobs {
-		if !job.IsSuccessful {
-			continue
+		if job.IsSuccessful {
+			filenames[i] = job.ResultFile
+			i++
 		}
-		filenames[i] = job.Filepath
-		i++
 	}
 	filenames = filenames[:i]
 	sort.Strings(filenames)
 
 	// construct a prefix regexp to check if local file is within the scope
 	// of a sync
-	pathPrefix := filepath.Join(strings.Split(prefix, "/")...)
+	pathPrefix := filepath.Join(strings.Split(s.KeyPrefix, "/")...)
 	pathPrefix = filepath.Join(s.Localdir, pathPrefix)
 	pathPrefix = fmt.Sprintf("^%s", regexp.QuoteMeta(pathPrefix))
 	prefixRegexp := regexp.MustCompile(pathPrefix)
 
+	rules := s.Rules
 	rules = append(rules, prefixRegexp)
 
 	FileCheck := func(currpath string, info os.FileInfo, err error) error {
@@ -252,176 +333,33 @@ func (s *Syncer) DownloadBucket(bucket *s3.Bucket, prefix string,
 	}
 }
 
-func (s *Syncer) UploadDirectory(bucket *s3.Bucket, prefix string,
-	rules []*regexp.Regexp) {
-	maxJobs := 0
-	if s.Concurrent > 0 {
-		maxJobs = s.Concurrent
-	}
-	nTries := 1
-	if s.NTries > 0 {
-		nTries = s.NTries
-	}
-	jobPool := make(chan int, maxJobs)
-	doneJobs := make(chan *SyncJob)
-	nJobs := 0
-	UpWalk := func(currpath string, info os.FileInfo, err error) error {
-		if info.IsDir() {
-			return nil
-		}
-		for _, rule := range rules {
-			if !rule.MatchString(currpath) {
-				return nil
-			}
-		}
-		sj := &SyncJob{
-			Bucket:       bucket,
-			Localdir:     s.Localdir,
-			JobType:      UPLOAD,
-			NTries:       nTries,
-			Filepath:     currpath,
-			Prefix:       prefix,
-			IsSuccessful: false,
-			Rules:        rules,
-		}
-		nJobs++
-		go sj.RunJob(jobPool, doneJobs)
-		return nil
-	}
-	err := filepath.Walk(s.Localdir, UpWalk)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error uploading directory: %s\n", err)
-		os.Exit(2)
-	}
-	jobs := make([]*SyncJob, nJobs)
-	// Wait for all jobs to finish
-	for {
-		j := <-doneJobs
-		nJobs--
-		jobs[nJobs] = j
-		if nJobs == 0 {
-			break
-		}
-	}
-}
-
-// Run an upload or download job through a job pool
-func (sj *SyncJob) RunJob(jobPool chan int, doneJobs chan *SyncJob) {
-	jobPool <- 1
-	defer func() {
-		if r := recover(); r != nil {
-			fmt.Printf("Error downloading file: %s\n", sj.Key.Key)
-			fmt.Printf("%s\n", r)
-		}
-		<-jobPool
-		doneJobs <- sj
-	}()
-	switch sj.JobType {
-	case UPLOAD:
-		for i := 0; i < sj.NTries; i++ {
-			if sj.Upload() {
-				return
-			}
-		}
-	case DOWNLOAD:
-		for i := 0; i < sj.NTries; i++ {
-			if sj.Download() {
-				return
-			}
-		}
-	default:
-		fmt.Println("Unknown job type")
-		panic("")
-	}
-	fmt.Printf("Hit max tries attempting to download: %s\n", sj.Key.Key)
-}
-
-// Download a file from S3
-func (sj *SyncJob) Download() bool {
-	// Make sure this key matches all Regexp rules passed to the job.
-	// For example a rule could require a certain file extention.
-	for _, rule := range sj.Rules {
-		if !rule.MatchString(sj.Key.Key) {
-			fmt.Printf("Ignoring file: %s\n", sj.Key.Key)
-			sj.IsSuccessful = true
-			return true
-		}
-	}
-	target, err := sj.CreateDownloadPath()
-	if err != nil {
-		panic(err)
-	}
-	sj.Filepath = target
-	if sj.IsHashSame() {
-		fmt.Printf("File already downloaded: %s\n", sj.Key.Key)
-		sj.IsSuccessful = true
-		return true
-	}
-	// Construct file
-	fi, err := os.Create(target)
-	if err != nil {
-		fmt.Printf("Could not create file: %s\n", target)
-		return false
-	}
-	defer fi.Close()
-	// Get response reader
-	keyName := strings.Replace(sj.Key.Key, " ", "+", -1)
-	responseReader, err := sj.Bucket.GetReader(keyName)
-	if err != nil {
-		fmt.Printf("Error making request for %s: %s\n",
-			keyName, err)
-		return false
-	}
-	defer responseReader.Close()
-	// Read response to file
-	nbytes, err := io.Copy(fi, responseReader)
-	if err != nil {
-		fmt.Printf("Error writing file to disk: %s\n", err)
-		return false
-	}
-	fmt.Printf("[%10d bytes] Downloaded file: %s\n", nbytes, sj.Key.Key)
-	sj.IsSuccessful = true
-	return true
-}
-
-func EscapeS3Key(s3key string) string {
-	pathParts := strings.Split(s3key, "/")
-	for i := 0; i < len(pathParts); i++ {
-		pathParts[i] = url.QueryEscape(pathParts[i])
-	}
-	return strings.Join(pathParts, "/")
-}
-
 // Have to create a filepath to download file to.
 // Lots of file io error handling. Fuuunnnnn
-func (sj *SyncJob) CreateDownloadPath() (filename string, funcErr error) {
-	s3Path := strings.Split(sj.Key.Key, "/")
-	target := sj.Localdir
+func CreateDownloadPath(key s3.Key, localdir string) (string, error) {
+	s3Path := strings.Split(key.Key, "/")
+	target := localdir
 	for _, pathPart := range s3Path {
 		fi, err := os.Stat(target)
 		if err == nil {
 			if !fi.IsDir() {
 				errMsg := fmt.Sprintf("%s is a directory"+
 					" expected directory", target)
-				funcErr = errors.New(errMsg)
-				return
+				return "", errors.New(errMsg)
 			}
 		} else {
 			err = os.Mkdir(target, 0755)
 			if err != nil {
-				funcErr = err
-				return
+				return "", err
 			}
 		}
 		target = filepath.Join(target, pathPart)
 	}
-	filename = target
-	return
+	return target, nil
 }
 
 // Is the local hash of the file the same as the key on s3?
-func (sj *SyncJob) IsHashSame() bool {
-	fi, err := os.Open(sj.Filepath)
+func IsHashSame(eTag, filepath string) bool {
+	fi, err := os.Open(filepath)
 	if err != nil {
 		// local file doesn't exist, so no they aren't the same
 		return false
@@ -435,25 +373,5 @@ func (sj *SyncJob) IsHashSame() bool {
 	}
 	fileHash := fmt.Sprintf("\"%x\"", h.Sum(nil))
 	// return if the local hash and the remote hash are the same
-	return fileHash == sj.Key.ETag
-}
-
-// Upload a file to S3
-func (sj *SyncJob) Upload() bool {
-	relpath, _ := filepath.Rel(sj.Localdir, sj.Filepath)
-	// to slash (from os file sep) for s3 path upload
-	keypath := filepath.ToSlash(relpath)
-	keypath = path.Join(sj.Prefix, keypath)
-	_, err := os.Open(sj.Filepath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error opening file for upload:%s\n",
-			sj.Filepath)
-	}
-	_, err = sj.Bucket.Head(keypath)
-	if err != nil {
-		// File isn't already on s3
-	} else {
-
-	}
-	return true
+	return fileHash == eTag
 }
