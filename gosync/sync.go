@@ -228,7 +228,7 @@ func (s *Syncer) Download() {
 	lastKey := ""
 	// Iterate through bucket keys
 	for {
-		keyList, err := bucket.List(s.KeyPrefix, "", lastKey, 200)
+		keyList, err := bucket.List(s.KeyPrefix, "", lastKey, 1000)
 		if err != nil {
 			fmt.Fprintf(os.Stderr,
 				"Could not find bucket '%s' in region '%s'\n",

@@ -7,26 +7,33 @@ type Job interface {
 type JobRunner struct {
 	JobPool  chan int
 	DoneJobs chan Job
+	HasLimit bool
 }
 
 func NewJobRunner(maxJobs int) *JobRunner {
 	if maxJobs < 0 {
 		maxJobs = 0
 	}
+	hasLimit := maxJobs > 0
 	jobPool := make(chan int, maxJobs)
 	doneJobs := make(chan Job)
 	return &JobRunner{
 		JobPool:  jobPool,
 		DoneJobs: doneJobs,
+		HasLimit: hasLimit,
 	}
 }
 
 func (jr *JobRunner) RunJob(j Job) {
 	go func() {
-		jr.JobPool <- 1
+		if jr.HasLimit {
+			jr.JobPool <- 1
+		}
 		defer func() {
-			_ = recover()
-			_ = <-jr.JobPool
+			recover()
+			if jr.HasLimit {
+				<-jr.JobPool
+			}
 			jr.DoneJobs <- j
 		}()
 		j, _ = j.Run()

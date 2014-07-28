@@ -26,8 +26,8 @@ Donwload binary (compiled with [gox](https://github.com/mitchellh/gox)):
 * [openbsd_386](https://s3.amazonaws.com/gosync/openbsd_386/gosync)
 * [openbsd_amd64](https://s3.amazonaws.com/gosync/openbsd_amd64/gosync)
 * [plan9_386](https://s3.amazonaws.com/gosync/plan9_386/gosync)
-* [windows_386.exe](https://s3.amazonaws.com/gosync/windows_386.exe/gosync)
-* [windows_amd64.exe](https://s3.amazonaws.com/gosync/windows_amd64.exe/gosync)
+* [windows_386](https://s3.amazonaws.com/gosync/windows_386/gosync.exe)
+* [windows_amd64](https://s3.amazonaws.com/gosync/windows_amd64/gosync.exe)
 
 # Setup
 
@@ -61,7 +61,7 @@ Upload with a prefix. This example will prepend all resuling keys with `prefix` 
 
 Specify number of concurrent goroutines for uploading files (default is 20):
 
-    gosync --concurrent 30 s3://bucket local_dir
+    gosync --concurrent 30 local_dir s3://bucket
     
 _Upload with a wildcard._ Only upload files from a local directory which match an extension.
 
