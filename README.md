@@ -69,7 +69,11 @@ _Upload with a wildcard._ Only upload files from a local directory which match a
     
 _Full sync._ Delete S3 keys that don't appear in local directory.
 
-    # under development as of version 0.1.3
+    gosync --full local_dir s3://bucket
+
+Full sync only applies to results matching a query. So the following command won't update or delete any s3 keys without the prefix of `subdir` which don't match `*.json`
+
+    gosync --full local_dir*.json s3://bucket/subdir
 
 _Continue after interruption._ `gosync` compares each local file's MD5 hash against its corresponding S3 key's hash to see if it's already uploaded it. You can continue after an interruption without having to re-upload the entire local directory.
 
@@ -129,7 +133,7 @@ USAGE:
    gosync [global options] command [command options] [arguments...]
 
 VERSION:
-   0.1.3
+   0.1.4
 
 COMMANDS:
    help, h	Shows a list of commands or help for one command

@@ -17,7 +17,7 @@ type JobType int
 const (
 	UPLOAD JobType = iota
 	DOWNLOAD
-	VERSION string = "0.1.3"
+	VERSION string = "0.1.4"
 )
 
 // Shout out to #rstats

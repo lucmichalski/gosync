@@ -31,7 +31,7 @@ type UploadJob struct {
 	Localdir     string
 	Bucket       *s3.Bucket
 	KeyPrefix    string
-	ResultKey    s3.Key
+	ResultPath   string
 	IsSuccessful bool
 }
 
@@ -45,6 +45,7 @@ func (uj UploadJob) Run() (jobs.Job, error) {
 	// Filepaths may use backslashes (PCs), must convert to slash for S3.
 	s3Path := filepath.ToSlash(relPath)
 	s3Path = path.Join(uj.KeyPrefix, s3Path)
+	uj.ResultPath = s3Path
 	// Open file
 	fi, err := os.Open(uj.Localfile)
 	if err != nil {
@@ -104,6 +105,23 @@ func AlreadyUploaded(bucket *s3.Bucket, keyPath, filehash string) bool {
 	return eTag[0] == filehash
 }
 
+type DeleteJob struct {
+	Bucket       *s3.Bucket
+	KeyPath      string
+	IsSuccessful bool
+}
+
+func (dj DeleteJob) Run() (jobs.Job, error) {
+	err := dj.Bucket.Del(dj.KeyPath)
+	if err == nil {
+		dj.IsSuccessful = true
+		fmt.Printf("Successfully deleted key: '%s'\n", dj.KeyPath)
+	} else {
+		fmt.Printf("Error deleting key: '%s'\n", dj.KeyPath)
+	}
+	return dj, err
+}
+
 func (s *Syncer) Upload() {
 	// Get bucket, if that bucket doesn't exist create it
 	bucket := GetBucket(s.S3Cli, s.BucketName)
@@ -137,13 +155,76 @@ func (s *Syncer) Upload() {
 		fmt.Fprintf(os.Stderr, "Error uploading directory: %s\n", err)
 		os.Exit(2)
 	}
+	resultKeys := make([]string, nJobs)
+	nSuccessful := 0
 	jobs := make([]UploadJob, nJobs)
 	for i := 0; i < nJobs; i++ {
 		j := s.JobRunner.Get()
 		// Type cast back to an UploadJob
 		job, _ := j.(UploadJob)
+		if job.IsSuccessful {
+			resultKeys[nSuccessful] = job.ResultPath
+			nSuccessful++
+		}
 		jobs[i] = job
 	}
+	resultKeys = resultKeys[0:nSuccessful]
+	if !s.FullSync {
+		return
+	}
+	sort.Strings(resultKeys)
+	fmt.Println("Doing a full sync")
+	lastKey := ""
+	delJobs := 0
+	for {
+		keyList, err := bucket.List(s.KeyPrefix, "", lastKey, 1000)
+		if err != nil {
+			fmt.Fprintf(os.Stderr,
+				"Could not find bucket '%s' in region '%s'\n",
+				bucket.Name, s.S3Cli.Region.Name)
+			os.Exit(2)
+		}
+		keys := keyList.Contents
+		for _, key := range keys {
+			runJob := true
+			// Make sure this key matches all Regexp rules passed
+			// to the job. For example a rule could require a
+			// certain file extention.
+			for _, rule := range s.Rules {
+				if !rule.MatchString(key.Key) {
+					runJob = false
+					break
+				}
+			}
+			if !runJob {
+				continue
+			}
+			// Has this key already been uploaded?
+			i := sort.SearchStrings(resultKeys, key.Key)
+			if i < len(resultKeys) {
+				if resultKeys[i] == key.Key {
+					continue
+				}
+			}
+			delJobs++
+			dj := DeleteJob{
+				Bucket:       bucket,
+				KeyPath:      key.Key,
+				IsSuccessful: false,
+			}
+			s.JobRunner.RunJob(dj)
+		}
+		// Once the returned list is not truncated we're done!
+		if !keyList.IsTruncated {
+			break
+		}
+		lastKey = keys[len(keys)-1].Key
+	}
+	for i := 0; i < delJobs; i++ {
+		// clear the 'done job' channel
+		s.JobRunner.Get()
+	}
+	fmt.Println("Full sync cleanup done")
 }
 
 // Given a bucket name either get that bucket or create it if it doesn't exist
