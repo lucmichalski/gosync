@@ -122,6 +122,31 @@ func (dj DeleteJob) Run() (jobs.Job, error) {
 	return dj, err
 }
 
+func (s *Syncer) BucketExists(bucketName string) bool {
+
+	buckets, err := s.S3Cli.ListBuckets()
+	if err != nil {
+		return false
+	}
+	for _, bucket := range buckets.Buckets {
+		if bucket.Name == bucketName {
+			// Split the S3 path into a bucket/prefix combination
+			bucket := s.S3Cli.Bucket(s.BucketName)
+			lastKey := ""
+			// Iterate through bucket keys
+			for {
+				_, err := bucket.List(s.KeyPrefix, "", lastKey, 1000)
+				if err != nil {
+					return false
+				} else {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
 func (s *Syncer) Upload() {
 	// Get bucket, if that bucket doesn't exist create it
 	bucket := GetBucket(s.S3Cli, s.BucketName)
@@ -182,6 +207,21 @@ func (s *Syncer) Upload() {
 			fmt.Fprintf(os.Stderr,
 				"Could not find bucket '%s' in region '%s'\n",
 				bucket.Name, s.S3Cli.Region.Name)
+		}
+		regions := []string{"us-east-1", "us-west-2"}
+		for _, region := range regions {
+			s.S3Cli.Region.Name = region
+			_, err := bucket.List(s.KeyPrefix, "", lastKey, 1000)
+			if err != nil {
+				break
+			} else {
+				fmt.Fprintf(os.Stderr,
+					"Could not find bucket '%s' in region '%s'\n",
+					bucket.Name, s.S3Cli.Region.Name)
+			}
+		}
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Could not find %s in any region\n", bucket.Name)
 			os.Exit(2)
 		}
 		keys := keyList.Contents

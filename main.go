@@ -90,26 +90,49 @@ func AppAction(c *cli.Context) {
 	}
 
 	region, ok := aws.Regions[c.String("region")]
+	var s *gosync.Syncer
 	if !ok {
-		Stop("'%s' is not a valid AWS region. Please select"+
-			" one from list below\n", c.String("region"))
-		for k, _ := range aws.Regions {
-			fmt.Println(k)
+		regions := []string{
+			"us-east-1",
+			"us-west-1",
+			"us-west-2",
+			"eu-west-1",
+			"eu-central-1",
+			"ap-northeast-1",
+			"ap-southeast-1",
+			"ap-southeast-2",
+			"sa-east-1",
 		}
-		os.Exit(2)
+		for _, region := range regions {
+			s3Cli := s3.New(auth, aws.Regions[region])
+			// All ready. Construct a syncer and run it!
+			s = &gosync.Syncer{
+				BucketName: bucketName,
+				KeyPrefix:  keyPrefix,
+				Localdir:   local,
+				JobRunner:  jobs.NewJobRunner(c.Int("concurrent")),
+				FullSync:   c.Bool("full"),
+				S3Cli:      s3Cli,
+				Rules:      []*regexp.Regexp{postfixRule},
+			}
+			if s.BucketExists(bucketName) == true {
+				break
+			}
+		}
+	} else {
+		s3Cli := s3.New(auth, region)
+		// All ready. Construct a syncer and run it!
+		s = &gosync.Syncer{
+			BucketName: bucketName,
+			KeyPrefix:  keyPrefix,
+			Localdir:   local,
+			JobRunner:  jobs.NewJobRunner(c.Int("concurrent")),
+			FullSync:   c.Bool("full"),
+			S3Cli:      s3Cli,
+			Rules:      []*regexp.Regexp{postfixRule},
+		}
 	}
-	s3Cli := s3.New(auth, region)
 
-	// All ready. Construct a syncer and run it!
-	s := &gosync.Syncer{
-		BucketName: bucketName,
-		KeyPrefix:  keyPrefix,
-		Localdir:   local,
-		JobRunner:  jobs.NewJobRunner(c.Int("concurrent")),
-		FullSync:   c.Bool("full"),
-		S3Cli:      s3Cli,
-		Rules:      []*regexp.Regexp{postfixRule},
-	}
 	switch mode {
 	case DOWNLOAD:
 		s.Download()
@@ -124,14 +147,35 @@ func main() {
 	app.Usage = "gosync OPTIONS SOURCE TARGET"
 	app.Version = VERSION
 	app.Flags = []cli.Flag{
-		cli.IntFlag{"concurrent, c", 20,
-			"number of concurrent transfers"},
-		cli.StringFlag{"log-level, l", "info", "log level"},
-		cli.StringFlag{"accesskey, a", "", "AWS access key"},
-		cli.StringFlag{"secretkey, s", "", "AWS secret key"},
-		cli.BoolFlag{"full, f", "delete existing files/keys in " +
-			"TARGET which do not appear in SOURCE"},
-		cli.StringFlag{"region, r", "us-east-1", "Aws region"},
+		cli.IntFlag{
+			Name:  "concurrent, c",
+			Value: 20,
+			Usage: "number of concurrent transfers",
+		},
+		cli.StringFlag{
+			Name:  "log-level, l",
+			Value: "info",
+			Usage: "loglevel",
+		},
+		cli.StringFlag{
+			Name:  "accesskey, a",
+			Value: "",
+			Usage: "AWS accesskey",
+		},
+		cli.StringFlag{
+			Name:  "secretkey, s",
+			Value: "",
+			Usage: "AWS secretkey",
+		},
+		cli.BoolFlag{
+			Name:  "full, f",
+			Usage: "delete existing files/keys in TARGET which do not appear in SOURCE",
+		},
+		cli.StringFlag{
+			Name:  "region, r",
+			Value: "us-east-1",
+			Usage: "Aws region",
+		},
 	}
 	app.Action = AppAction
 	app.Run(os.Args)
