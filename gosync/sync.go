@@ -4,7 +4,7 @@ import (
 	"crypto/md5"
 	"errors"
 	"fmt"
-	"github.com/gomaz/goamz/s3"
+	"github.com/goamz/goamz/s3"
 	"github.com/lucmichalski/gosync/jobs"
 	"io"
 	"os"
